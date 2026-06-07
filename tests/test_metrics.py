@@ -18,3 +18,25 @@ def test_fmt_rate_zero():
 def test_fmt_gb_one_decimal():
     # 8.1 GiB
     assert metrics.fmt_gb(int(8.1 * 1024**3)) == "8.1"
+
+
+# append to tests/test_metrics.py
+
+def test_rate_calc_first_sample_returns_zero():
+    rc = metrics.RateCalc()
+    # first observation has no previous frame
+    assert rc.update(read=1000, write=2000, now=10.0) == (0.0, 0.0)
+
+
+def test_rate_calc_second_sample_divides_by_interval():
+    rc = metrics.RateCalc()
+    rc.update(read=1000, write=2000, now=10.0)
+    # 1 second later: +500 read, +1000 write
+    assert rc.update(read=1500, write=3000, now=11.0) == (500.0, 1000.0)
+
+
+def test_rate_calc_handles_zero_interval():
+    rc = metrics.RateCalc()
+    rc.update(read=1000, write=2000, now=10.0)
+    # same timestamp -> avoid divide-by-zero, return 0
+    assert rc.update(read=1500, write=3000, now=10.0) == (0.0, 0.0)
