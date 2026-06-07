@@ -56,14 +56,62 @@ class RateCalc:
         return rate
 
 
+def parse_vm_stat(output: str):
+    """Parse `vm_stat` output -> (page_size_bytes, {page-category: count}).
+
+    Pulls the categories needed to reproduce Activity Monitor's "Memory Used":
+    wired, compressor, anonymous, purgeable.
+    """
+    psm = re.search(r"page size of (\d+)", output)
+    page_size = int(psm.group(1)) if psm else 4096
+
+    def pg(label):
+        m = re.search(re.escape(label) + r":\s+(\d+)\.", output)
+        return int(m.group(1)) if m else 0
+
+    return page_size, {
+        "wired": pg("Pages wired down"),
+        "compressor": pg("Pages occupied by compressor"),
+        "anonymous": pg("Anonymous pages"),
+        "purgeable": pg("Pages purgeable"),
+    }
+
+
+def mem_used_bytes(page_size: int, pages: dict) -> int:
+    """Activity Monitor's "Memory Used" = App + Wired + Compressed (bytes).
+
+    App Memory = anonymous pages that aren't purgeable. This is what macOS
+    reports as used, and unlike psutil it INCLUDES compressed memory (which can
+    be many GB), so it matches Activity Monitor instead of under-counting.
+    """
+    app = max(0, pages["anonymous"] - pages["purgeable"])
+    return (app + pages["wired"] + pages["compressor"]) * page_size
+
+
+def mac_memory() -> dict:
+    """RAM usage matching Activity Monitor. Falls back to psutil if vm_stat fails."""
+    total = psutil.virtual_memory().total
+    try:
+        out = subprocess.run(
+            ["vm_stat"], capture_output=True, text=True, timeout=5
+        ).stdout
+        page_size, pages = parse_vm_stat(out)
+        used = mem_used_bytes(page_size, pages)
+    except Exception:
+        vm = psutil.virtual_memory()
+        used = vm.used
+    pct = (100.0 * used / total) if total else 0.0
+    return {"used": used, "total": total, "pct": pct}
+
+
 def sample_cpu_ram() -> dict:
-    """Snapshot CPU percent (since last call) and RAM usage."""
-    vm = psutil.virtual_memory()
+    """Snapshot CPU percent (since last call) and Activity-Monitor-style RAM."""
+    mem = mac_memory()
     return {
         "cpu_pct": psutil.cpu_percent(interval=None),
-        "ram_used": vm.used,
-        "ram_total": vm.total,
-        "ram_pct": vm.percent,
+        "ram_used": mem["used"],
+        "ram_total": mem["total"],
+        "ram_pct": mem["pct"],
     }
 
 
@@ -110,6 +158,12 @@ _UP_URL = "https://speed.cloudflare.com/__up"
 _DOWN_BYTES = 25_000_000
 _UP_BYTES = 10_000_000
 _SPEED_TIMEOUT = 30
+# Cloudflare's speed endpoints return 403 to the default urllib User-Agent,
+# so send a browser-like one.
+_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+)
 
 
 def mbps(num_bytes: float, seconds: float) -> float:
@@ -121,7 +175,7 @@ def mbps(num_bytes: float, seconds: float) -> float:
 
 def _http_download_bytes(nbytes: int, timeout: float):
     """Download nbytes from Cloudflare; return (bytes_read, elapsed_seconds)."""
-    req = urllib.request.Request(_DOWN_URL.format(n=nbytes))
+    req = urllib.request.Request(_DOWN_URL.format(n=nbytes), headers={"User-Agent": _UA})
     start = time.monotonic()
     total = 0
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -136,7 +190,10 @@ def _http_download_bytes(nbytes: int, timeout: float):
 def _http_upload_bytes(nbytes: int, timeout: float):
     """Upload nbytes to Cloudflare; return (bytes_sent, elapsed_seconds)."""
     payload = b"\0" * nbytes
-    req = urllib.request.Request(_UP_URL, data=payload, method="POST")
+    req = urllib.request.Request(
+        _UP_URL, data=payload, method="POST",
+        headers={"User-Agent": _UA, "Content-Type": "application/octet-stream"},
+    )
     start = time.monotonic()
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         resp.read()

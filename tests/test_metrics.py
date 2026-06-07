@@ -120,3 +120,41 @@ def test_rate_calc_clamps_negative_on_counter_reset():
     rc.update(read=5000, write=9000, now=10.0)
     # counters reset DOWN (e.g. interface restart): must not return negatives
     assert rc.update(read=100, write=200, now=11.0) == (0.0, 0.0)
+
+
+VM_STAT_SAMPLE = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    11969.
+Pages active:                                 364159.
+Pages inactive:                               352224.
+Pages wired down:                             184766.
+Pages purgeable:                               10518.
+File-backed pages:                            260663.
+Anonymous pages:                              465395.
+Pages occupied by compressor:                 595703.
+"""
+
+
+def test_parse_vm_stat_extracts_pagesize_and_categories():
+    page_size, pages = metrics.parse_vm_stat(VM_STAT_SAMPLE)
+    assert page_size == 16384
+    assert pages["wired"] == 184766
+    assert pages["compressor"] == 595703
+    assert pages["anonymous"] == 465395
+    assert pages["purgeable"] == 10518
+
+
+def test_mem_used_bytes_is_app_plus_wired_plus_compressed():
+    _, pages = metrics.parse_vm_stat(VM_STAT_SAMPLE)
+    assert metrics.mem_used_bytes(16384, pages) == 20239908864
+
+
+def test_mem_used_bytes_clamps_negative_app_memory():
+    pages = {"anonymous": 5, "purgeable": 100, "wired": 10, "compressor": 20}
+    assert metrics.mem_used_bytes(4096, pages) == 30 * 4096
+
+
+def test_mac_memory_returns_used_total_pct():
+    m = metrics.mac_memory()
+    assert set(m.keys()) == {"used", "total", "pct"}
+    assert 0 < m["used"] <= m["total"]
+    assert 0.0 <= m["pct"] <= 100.0
