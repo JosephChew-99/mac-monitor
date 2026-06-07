@@ -1,5 +1,6 @@
 # macmonitor.py
 """macmonitor — a macOS menu bar system monitor."""
+import sys
 import threading
 import time
 
@@ -91,7 +92,12 @@ class MacMonitor(rumps.App):
 
     @rumps.timer(2)
     def refresh(self, _):
-        self._render()
+        try:
+            self._render()
+        except Exception as e:
+            # A transient sampling error must not kill the timer; keep the
+            # previous values and try again on the next tick.
+            print(f"macmonitor: refresh error: {e}", file=sys.stderr)
 
     def on_speed_test(self, _):
         if self._speedtest_running:
@@ -100,14 +106,16 @@ class MacMonitor(rumps.App):
         self.speedtest_result.title = "测速中…"
 
         def worker():
-            result = metrics.run_speed_test()
-            if result["ok"]:
-                self.speedtest_result.title = (
-                    f"上次结果: ↓{result['down_mbps']} / ↑{result['up_mbps']} Mbps"
-                )
-            else:
-                self.speedtest_result.title = "测速失败（检查网络）"
-            self._speedtest_running = False
+            try:
+                result = metrics.run_speed_test()
+                if result["ok"]:
+                    self.speedtest_result.title = (
+                        f"上次结果: ↓{result['down_mbps']} / ↑{result['up_mbps']} Mbps"
+                    )
+                else:
+                    self.speedtest_result.title = "测速失败（检查网络）"
+            finally:
+                self._speedtest_running = False
 
         threading.Thread(target=worker, daemon=True).start()
 

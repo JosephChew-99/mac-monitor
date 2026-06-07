@@ -6,6 +6,7 @@ up/down**, an on-demand **fast.com-style speed test**, and an **auto-start**
 toggle in the dropdown.
 
 Menu bar title: `CPU 23% · RAM 8.1G · Wi-Fi 1200M`
+(the last segment shows the network link speed, or `Net --` when it can't be read)
 
 ## Run from source
 
