@@ -40,3 +40,29 @@ def test_rate_calc_handles_zero_interval():
     rc.update(read=1000, write=2000, now=10.0)
     # same timestamp -> avoid divide-by-zero, return 0
     assert rc.update(read=1500, write=3000, now=10.0) == (0.0, 0.0)
+
+
+# append to tests/test_metrics.py
+
+def test_sample_cpu_ram_returns_expected_keys():
+    s = metrics.sample_cpu_ram()
+    assert set(s.keys()) == {"cpu_pct", "ram_used", "ram_total", "ram_pct"}
+    assert 0.0 <= s["cpu_pct"] <= 100.0 * (psutil_cpu_count() or 1)
+    assert s["ram_used"] <= s["ram_total"]
+
+
+def test_raw_net_counters_returns_two_ints():
+    recv, sent = metrics.raw_net_counters()
+    assert isinstance(recv, int) and isinstance(sent, int)
+    assert recv >= 0 and sent >= 0
+
+
+def test_raw_disk_counters_returns_two_ints():
+    read, write = metrics.raw_disk_counters()
+    assert isinstance(read, int) and isinstance(write, int)
+    assert read >= 0 and write >= 0
+
+
+def psutil_cpu_count():
+    import psutil
+    return psutil.cpu_count()

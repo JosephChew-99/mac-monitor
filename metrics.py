@@ -4,6 +4,12 @@ _KB = 1024
 _MB = 1024 ** 2
 _GB = 1024 ** 3
 
+import psutil
+
+# Prime psutil's cpu_percent so the first real call returns a meaningful value
+# (the very first call always returns 0.0 by design).
+psutil.cpu_percent(interval=None)
+
 
 def fmt_rate(bytes_per_sec: float) -> str:
     """Bytes/sec -> compact string. <1 MB/s shows KB ('820K'), else MB ('1.2M')."""
@@ -42,3 +48,30 @@ class RateCalc:
         if self._prev_t is None or now > self._prev_t:
             self._prev_read, self._prev_write, self._prev_t = read, write, now
         return rate
+
+
+# append to metrics.py
+
+def sample_cpu_ram() -> dict:
+    """Snapshot CPU percent (since last call) and RAM usage."""
+    vm = psutil.virtual_memory()
+    return {
+        "cpu_pct": psutil.cpu_percent(interval=None),
+        "ram_used": vm.used,
+        "ram_total": vm.total,
+        "ram_pct": vm.percent,
+    }
+
+
+def raw_net_counters() -> tuple:
+    """(bytes_recv, bytes_sent) summed across all interfaces."""
+    n = psutil.net_io_counters()
+    return n.bytes_recv, n.bytes_sent
+
+
+def raw_disk_counters() -> tuple:
+    """(read_bytes, write_bytes) summed across all disks. (0, 0) if unavailable."""
+    d = psutil.disk_io_counters()
+    if d is None:
+        return 0, 0
+    return d.read_bytes, d.write_bytes
