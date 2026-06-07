@@ -15,7 +15,7 @@ LINK_SPEED_REFRESH_SECS = 30
 
 class MacMonitor(rumps.App):
     def __init__(self):
-        super().__init__("macmonitor", title="macmonitor …", quit_button=None)
+        super().__init__("macmonitor", title="🖥 …", quit_button=None)
 
         # menu items (kept as attributes so the timer can mutate their titles)
         self.cpu_item = rumps.MenuItem("CPU 使用率  —")
@@ -69,14 +69,9 @@ class MacMonitor(rumps.App):
         if now - self._last_link_read > LINK_SPEED_REFRESH_SECS or self._link_label is None:
             self._link_label = metrics.read_link_speed()
             self._last_link_read = now
-        link_title = self._link_label or "Net --"
-
-        # menu bar title: CPU · RAM · link speed
-        self.title = (
-            f"CPU {s['cpu_pct']:.0f}% · "
-            f"RAM {metrics.fmt_gb(s['ram_used'])}G · "
-            f"{link_title}"
-        )
+        # menu bar title: compact so it fits beside the notch
+        # (full CPU/RAM/link/disk detail lives in the dropdown below)
+        self.title = f"🖥 {s['cpu_pct']:.0f}% · {metrics.fmt_gb(s['ram_used'])}G"
 
         # dropdown detail
         self.cpu_item.title = f"CPU 使用率  {s['cpu_pct']:.1f}%"
