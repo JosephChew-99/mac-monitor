@@ -66,3 +66,32 @@ def test_raw_disk_counters_returns_two_ints():
 def psutil_cpu_count():
     import psutil
     return psutil.cpu_count()
+
+
+# append to tests/test_metrics.py
+
+SP_SAMPLE = """
+      Interfaces:
+        en0:
+          Card Type: Wi-Fi
+          Status: Connected
+          Current Network Information:
+            MyNetwork:
+              PHY Mode: 802.11ax
+              Channel: 36 (5GHz, 80MHz)
+              Tx Rate: 1200
+"""
+
+
+def test_parse_airport_tx_rate_extracts_mbps():
+    assert metrics.parse_airport_tx_rate(SP_SAMPLE) == 1200
+
+
+def test_parse_airport_tx_rate_missing_returns_none():
+    assert metrics.parse_airport_tx_rate("no rate here") is None
+
+
+def test_read_link_speed_does_not_crash():
+    # On CI/headless this may be None; we only require it not to raise.
+    result = metrics.read_link_speed()
+    assert result is None or isinstance(result, str)

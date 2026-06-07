@@ -4,6 +4,9 @@ _KB = 1024
 _MB = 1024 ** 2
 _GB = 1024 ** 3
 
+import re
+import subprocess
+
 import psutil
 
 # Prime psutil's cpu_percent so the first real call returns a meaningful value
@@ -75,3 +78,29 @@ def raw_disk_counters() -> tuple:
     if d is None:
         return 0, 0
     return d.read_bytes, d.write_bytes
+
+
+# append to metrics.py
+
+def parse_airport_tx_rate(sp_output: str):
+    """Extract the 'Tx Rate' (Mbps int) from `system_profiler SPAirPortDataType`."""
+    m = re.search(r"Tx Rate:\s*([0-9]+)", sp_output)
+    return int(m.group(1)) if m else None
+
+
+def read_link_speed():
+    """Return a short label like 'Wi-Fi 1200M', or None if unavailable.
+
+    Tries Wi-Fi Tx Rate first (system_profiler). Best-effort; never raises.
+    """
+    try:
+        out = subprocess.run(
+            ["system_profiler", "SPAirPortDataType"],
+            capture_output=True, text=True, timeout=8,
+        ).stdout
+        rate = parse_airport_tx_rate(out)
+        if rate:
+            return f"Wi-Fi {rate}M"
+    except Exception:
+        pass
+    return None
