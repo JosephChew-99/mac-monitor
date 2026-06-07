@@ -20,8 +20,6 @@ def test_fmt_gb_one_decimal():
     assert metrics.fmt_gb(int(8.1 * 1024**3)) == "8.1"
 
 
-# append to tests/test_metrics.py
-
 def test_rate_calc_first_sample_returns_zero():
     rc = metrics.RateCalc()
     # first observation has no previous frame
@@ -41,8 +39,6 @@ def test_rate_calc_handles_zero_interval():
     # same timestamp -> avoid divide-by-zero, return 0
     assert rc.update(read=1500, write=3000, now=10.0) == (0.0, 0.0)
 
-
-# append to tests/test_metrics.py
 
 def test_sample_cpu_ram_returns_expected_keys():
     s = metrics.sample_cpu_ram()
@@ -67,8 +63,6 @@ def psutil_cpu_count():
     import psutil
     return psutil.cpu_count()
 
-
-# append to tests/test_metrics.py
 
 SP_SAMPLE = """
       Interfaces:
@@ -118,3 +112,11 @@ def test_run_speed_test_failure_returns_not_ok(monkeypatch):
     monkeypatch.setattr(metrics, "_http_download_bytes", boom)
     result = metrics.run_speed_test()
     assert result["ok"] is False
+    assert "error" in result
+
+
+def test_rate_calc_clamps_negative_on_counter_reset():
+    rc = metrics.RateCalc()
+    rc.update(read=5000, write=9000, now=10.0)
+    # counters reset DOWN (e.g. interface restart): must not return negatives
+    assert rc.update(read=100, write=200, now=11.0) == (0.0, 0.0)

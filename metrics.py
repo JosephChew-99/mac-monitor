@@ -1,9 +1,5 @@
 """Pure, testable system-metric helpers for macmonitor. No rumps imports."""
 
-_KB = 1024
-_MB = 1024 ** 2
-_GB = 1024 ** 3
-
 import re
 import subprocess
 import time
@@ -14,6 +10,10 @@ import psutil
 # Prime psutil's cpu_percent so the first real call returns a meaningful value
 # (the very first call always returns 0.0 by design).
 psutil.cpu_percent(interval=None)
+
+_KB = 1024
+_MB = 1024 ** 2
+_GB = 1024 ** 3
 
 
 def fmt_rate(bytes_per_sec: float) -> str:
@@ -27,8 +27,6 @@ def fmt_gb(num_bytes: float) -> str:
     """Bytes -> GiB with one decimal, no unit suffix (e.g. '8.1')."""
     return f"{num_bytes / _GB:.1f}"
 
-
-# append to metrics.py
 
 class RateCalc:
     """Turns monotonically increasing byte counters into per-second rates.
@@ -47,15 +45,16 @@ class RateCalc:
             rate = (0.0, 0.0)
         else:
             dt = now - self._prev_t
-            rate = ((read - self._prev_read) / dt, (write - self._prev_write) / dt)
+            rate = (
+                max(0.0, (read - self._prev_read) / dt),
+                max(0.0, (write - self._prev_write) / dt),
+            )
         # On a zero/negative interval we keep the previous baseline so the next
         # valid sample still measures from the correct point.
         if self._prev_t is None or now > self._prev_t:
             self._prev_read, self._prev_write, self._prev_t = read, write, now
         return rate
 
-
-# append to metrics.py
 
 def sample_cpu_ram() -> dict:
     """Snapshot CPU percent (since last call) and RAM usage."""
@@ -82,8 +81,6 @@ def raw_disk_counters() -> tuple:
     return d.read_bytes, d.write_bytes
 
 
-# append to metrics.py
-
 def parse_airport_tx_rate(sp_output: str):
     """Extract the 'Tx Rate' (Mbps int) from `system_profiler SPAirPortDataType`."""
     m = re.search(r"Tx Rate:\s*([0-9]+)", sp_output)
@@ -108,12 +105,11 @@ def read_link_speed():
     return None
 
 
-# append to metrics.py
-
 _DOWN_URL = "https://speed.cloudflare.com/__down?bytes={n}"
 _UP_URL = "https://speed.cloudflare.com/__up"
 _DOWN_BYTES = 25_000_000
 _UP_BYTES = 10_000_000
+_SPEED_TIMEOUT = 30
 
 
 def mbps(num_bytes: float, seconds: float) -> float:
@@ -150,8 +146,8 @@ def _http_upload_bytes(nbytes: int, timeout: float):
 def run_speed_test() -> dict:
     """Blocking fast.com-style test. Returns dict with ok/down_mbps/up_mbps."""
     try:
-        dn_bytes, dn_t = _http_download_bytes(_DOWN_BYTES, 30)
-        up_bytes, up_t = _http_upload_bytes(_UP_BYTES, 30)
+        dn_bytes, dn_t = _http_download_bytes(_DOWN_BYTES, _SPEED_TIMEOUT)
+        up_bytes, up_t = _http_upload_bytes(_UP_BYTES, _SPEED_TIMEOUT)
         return {
             "ok": True,
             "down_mbps": mbps(dn_bytes, dn_t),
