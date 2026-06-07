@@ -6,6 +6,8 @@ _GB = 1024 ** 3
 
 import re
 import subprocess
+import time
+import urllib.request
 
 import psutil
 
@@ -104,3 +106,56 @@ def read_link_speed():
     except Exception:
         pass
     return None
+
+
+# append to metrics.py
+
+_DOWN_URL = "https://speed.cloudflare.com/__down?bytes={n}"
+_UP_URL = "https://speed.cloudflare.com/__up"
+_DOWN_BYTES = 25_000_000
+_UP_BYTES = 10_000_000
+
+
+def mbps(num_bytes: float, seconds: float) -> float:
+    """Bytes transferred over `seconds` -> megabits per second, 1 decimal."""
+    if seconds <= 0:
+        return 0.0
+    return round((num_bytes * 8) / seconds / 1_000_000, 1)
+
+
+def _http_download_bytes(nbytes: int, timeout: float):
+    """Download nbytes from Cloudflare; return (bytes_read, elapsed_seconds)."""
+    req = urllib.request.Request(_DOWN_URL.format(n=nbytes))
+    start = time.monotonic()
+    total = 0
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+    return total, time.monotonic() - start
+
+
+def _http_upload_bytes(nbytes: int, timeout: float):
+    """Upload nbytes to Cloudflare; return (bytes_sent, elapsed_seconds)."""
+    payload = b"\0" * nbytes
+    req = urllib.request.Request(_UP_URL, data=payload, method="POST")
+    start = time.monotonic()
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        resp.read()
+    return nbytes, time.monotonic() - start
+
+
+def run_speed_test() -> dict:
+    """Blocking fast.com-style test. Returns dict with ok/down_mbps/up_mbps."""
+    try:
+        dn_bytes, dn_t = _http_download_bytes(_DOWN_BYTES, 30)
+        up_bytes, up_t = _http_upload_bytes(_UP_BYTES, 30)
+        return {
+            "ok": True,
+            "down_mbps": mbps(dn_bytes, dn_t),
+            "up_mbps": mbps(up_bytes, up_t),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

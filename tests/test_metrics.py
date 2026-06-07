@@ -95,3 +95,26 @@ def test_read_link_speed_does_not_crash():
     # On CI/headless this may be None; we only require it not to raise.
     result = metrics.read_link_speed()
     assert result is None or isinstance(result, str)
+
+
+def test_mbps_from_bytes_and_time():
+    # 12.5 MB in 1.0s = 100 Mbps
+    assert metrics.mbps(12_500_000, 1.0) == 100.0
+
+
+def test_run_speed_test_uses_injected_io(monkeypatch):
+    # Fake: 25 MB downloaded in 2s, 5 MB uploaded in 1s
+    monkeypatch.setattr(metrics, "_http_download_bytes", lambda nbytes, t: (25_000_000, 2.0))
+    monkeypatch.setattr(metrics, "_http_upload_bytes", lambda nbytes, t: (5_000_000, 1.0))
+    result = metrics.run_speed_test()
+    assert result["ok"] is True
+    assert result["down_mbps"] == 100.0
+    assert result["up_mbps"] == 40.0
+
+
+def test_run_speed_test_failure_returns_not_ok(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("no network")
+    monkeypatch.setattr(metrics, "_http_download_bytes", boom)
+    result = metrics.run_speed_test()
+    assert result["ok"] is False
