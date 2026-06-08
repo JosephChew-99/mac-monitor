@@ -57,11 +57,7 @@ class RateCalc:
 
 
 def parse_vm_stat(output: str):
-    """Parse `vm_stat` output -> (page_size_bytes, {page-category: count}).
-
-    Pulls the categories needed to reproduce Activity Monitor's "Memory Used":
-    wired, compressor, anonymous, purgeable.
-    """
+    """Parse `vm_stat` output -> (page_size_bytes, {page-category: count})."""
     psm = re.search(r"page size of (\d+)", output)
     page_size = int(psm.group(1)) if psm else 4096
 
@@ -70,22 +66,27 @@ def parse_vm_stat(output: str):
         return int(m.group(1)) if m else 0
 
     return page_size, {
+        "free": pg("Pages free"),
+        "speculative": pg("Pages speculative"),
         "wired": pg("Pages wired down"),
-        "compressor": pg("Pages occupied by compressor"),
-        "anonymous": pg("Anonymous pages"),
         "purgeable": pg("Pages purgeable"),
+        "compressor": pg("Pages occupied by compressor"),
+        "file_backed": pg("File-backed pages"),
+        "anonymous": pg("Anonymous pages"),
     }
 
 
-def mem_used_bytes(page_size: int, pages: dict) -> int:
-    """Activity Monitor's "Memory Used" = App + Wired + Compressed (bytes).
+def mem_used_bytes(total_bytes: int, page_size: int, pages: dict) -> int:
+    """Activity Monitor's "Memory Used" = Physical − Cached Files − Free.
 
-    App Memory = anonymous pages that aren't purgeable. This is what macOS
-    reports as used, and unlike psutil it INCLUDES compressed memory (which can
-    be many GB), so it matches Activity Monitor instead of under-counting.
+    The panel relation is `Physical = Used + Cached Files + Free`, so the headline
+    number is the physical RAM minus everything macOS can reclaim on demand:
+    free pages, speculative (read-ahead) pages, and file-backed cache. Summing
+    App + Wired + Compressed instead under-counts by the dirty/mapped pages that
+    AM still folds into "Used".
     """
-    app = max(0, pages["anonymous"] - pages["purgeable"])
-    return (app + pages["wired"] + pages["compressor"]) * page_size
+    reclaimable = pages["free"] + pages["speculative"] + pages["file_backed"]
+    return max(0, total_bytes - reclaimable * page_size)
 
 
 def mac_memory() -> dict:
@@ -96,7 +97,7 @@ def mac_memory() -> dict:
             ["vm_stat"], capture_output=True, text=True, timeout=5
         ).stdout
         page_size, pages = parse_vm_stat(out)
-        used = mem_used_bytes(page_size, pages)
+        used = mem_used_bytes(total, page_size, pages)
     except Exception:
         vm = psutil.virtual_memory()
         used = vm.used
@@ -130,24 +131,29 @@ def raw_disk_counters() -> tuple:
 
 
 def parse_airport_tx_rate(sp_output: str):
-    """Extract the 'Tx Rate' (Mbps int) from `system_profiler SPAirPortDataType`."""
-    m = re.search(r"Tx Rate:\s*([0-9]+)", sp_output)
+    """Extract the link rate (Mbps int) from `system_profiler SPAirPortDataType`.
+
+    macOS 26 (Tahoe) renamed the field 'Tx Rate' -> 'Transmit Rate'; match both.
+    """
+    m = re.search(r"(?:Transmit Rate|Tx Rate):\s*([0-9]+)", sp_output)
     return int(m.group(1)) if m else None
 
 
 def read_link_speed():
-    """Return a short label like 'Wi-Fi 1200M', or None if unavailable.
+    """Return a short label like 'Wi-Fi 1152M', or None if unavailable.
 
-    Tries Wi-Fi Tx Rate first (system_profiler). Best-effort; never raises.
+    Uses CoreWLAN's transmitRate() — instant and permission-free (no SSID needed).
+    `system_profiler SPAirPortDataType` was dropped: on macOS 26 it can take >10s
+    (blocking) and renamed the field. Best-effort; never raises.
     """
     try:
-        out = subprocess.run(
-            ["system_profiler", "SPAirPortDataType"],
-            capture_output=True, text=True, timeout=8,
-        ).stdout
-        rate = parse_airport_tx_rate(out)
-        if rate:
-            return f"Wi-Fi {rate}M"
+        import CoreWLAN
+
+        iface = CoreWLAN.CWWiFiClient.sharedWiFiClient().interface()
+        if iface is not None:
+            rate = iface.transmitRate()  # Mbps
+            if rate and rate > 0:
+                return f"Wi-Fi {int(rate)} Mbps"
     except Exception:
         pass
     return None

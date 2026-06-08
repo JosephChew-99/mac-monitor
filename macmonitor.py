@@ -1,5 +1,6 @@
 # macmonitor.py
 """macmonitor — a macOS menu bar system monitor."""
+import subprocess
 import sys
 import threading
 import time
@@ -15,7 +16,10 @@ LINK_SPEED_REFRESH_SECS = 30
 
 class MacMonitor(rumps.App):
     def __init__(self):
-        super().__init__("macmonitor", title="🖥 …", quit_button=None)
+        # quit_button="退出" just adds a Chinese quit item to the dropdown.
+        # (The status bar item itself shows regardless of quit_button; if it's
+        # missing it's almost always menu-bar overflow on a notched Mac, not this.)
+        super().__init__("macmonitor", title="…", quit_button="退出")
 
         # menu items (kept as attributes so the timer can mutate their titles)
         self.cpu_item = rumps.MenuItem("CPU 使用率  —")
@@ -26,7 +30,8 @@ class MacMonitor(rumps.App):
         self.disk_read_item = rumps.MenuItem("磁盘 读取  —")
         self.disk_write_item = rumps.MenuItem("磁盘 写入  —")
         self.speedtest_item = rumps.MenuItem("⚡ 立即测速 (fast.com 式)", callback=self.on_speed_test)
-        self.speedtest_result = rumps.MenuItem("上次结果: 未测试")
+        self.speedtest_result = rumps.MenuItem("测速结果: 未测试")
+        self.activity_item = rumps.MenuItem("打开活动监视器", callback=self.on_open_activity_monitor)
         self.autostart_item = rumps.MenuItem("开机自启", callback=self.on_toggle_autostart)
         self.autostart_item.state = 1 if autostart.is_enabled() else 0
 
@@ -45,8 +50,9 @@ class MacMonitor(rumps.App):
             self.speedtest_item,
             self.speedtest_result,
             None,
+            self.activity_item,
             self.autostart_item,
-            rumps.MenuItem("退出", callback=rumps.quit_application),
+            # The "退出" quit button is added automatically via quit_button="退出".
         ]
 
         self._net_rate = metrics.RateCalc()
@@ -65,13 +71,12 @@ class MacMonitor(rumps.App):
         read, write = metrics.raw_disk_counters()
         rd, wr = self._disk_rate.update(read, write, now)
 
-        # link speed is slow to read; refresh at most every 30s
+        # link speed (CoreWLAN — instant, no subprocess) refreshed at most every 30s
         if now - self._last_link_read > LINK_SPEED_REFRESH_SECS or self._link_label is None:
             self._link_label = metrics.read_link_speed()
             self._last_link_read = now
-        # menu bar title: compact so it fits beside the notch
-        # (full CPU/RAM/link/disk detail lives in the dropdown below)
-        self.title = f"🖥 {s['cpu_pct']:.0f}% · {metrics.fmt_gb(s['ram_used'])}G"
+        # menu bar title: spaced out for readability, e.g. "23% · 8.4G".
+        self.title = f"{s['cpu_pct']:.0f}% · {metrics.fmt_gb(s['ram_used'])}G"
 
         # dropdown detail
         self.cpu_item.title = f"CPU 使用率  {s['cpu_pct']:.1f}%"
@@ -98,21 +103,40 @@ class MacMonitor(rumps.App):
         if self._speedtest_running:
             return
         self._speedtest_running = True
-        self.speedtest_result.title = "测速中…"
+        # Clicking a menu item closes the menu, so the user can't watch this line
+        # update live — they'd have to reopen the menu. We post a notification when
+        # the run finishes so the result reaches them without reopening.
+        self.speedtest_result.title = "测速中…（约 10 秒，完成会通知）"
 
         def worker():
             try:
                 result = metrics.run_speed_test()
                 if result["ok"]:
-                    self.speedtest_result.title = (
-                        f"上次结果: ↓{result['down_mbps']} / ↑{result['up_mbps']} Mbps"
-                    )
+                    summary = f"↓{result['down_mbps']} / ↑{result['up_mbps']} Mbps"
+                    self.speedtest_result.title = f"结果: {summary}"
+                    self._notify("测速完成", summary)
                 else:
                     self.speedtest_result.title = "测速失败（检查网络）"
+                    self._notify("测速失败", "请检查网络连接")
             finally:
                 self._speedtest_running = False
 
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _notify(title, message):
+        """Post a macOS notification; no-ops if unavailable (e.g. run as a plain
+        script rather than the bundled .app)."""
+        try:
+            rumps.notification(title, "", message)
+        except Exception:
+            pass
+
+    def on_open_activity_monitor(self, _):
+        try:
+            subprocess.run(["open", "-a", "Activity Monitor"], check=True)
+        except Exception as e:
+            rumps.alert("无法打开活动监视器", str(e))
 
     def on_toggle_autostart(self, sender):
         try:

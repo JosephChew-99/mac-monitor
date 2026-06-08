@@ -126,6 +126,7 @@ VM_STAT_SAMPLE = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
 Pages free:                                    11969.
 Pages active:                                 364159.
 Pages inactive:                               352224.
+Pages speculative:                              9980.
 Pages wired down:                             184766.
 Pages purgeable:                               10518.
 File-backed pages:                            260663.
@@ -137,20 +138,27 @@ Pages occupied by compressor:                 595703.
 def test_parse_vm_stat_extracts_pagesize_and_categories():
     page_size, pages = metrics.parse_vm_stat(VM_STAT_SAMPLE)
     assert page_size == 16384
+    assert pages["free"] == 11969
+    assert pages["speculative"] == 9980
     assert pages["wired"] == 184766
     assert pages["compressor"] == 595703
     assert pages["anonymous"] == 465395
     assert pages["purgeable"] == 10518
+    assert pages["file_backed"] == 260663
 
 
-def test_mem_used_bytes_is_app_plus_wired_plus_compressed():
+def test_mem_used_bytes_is_physical_minus_reclaimable():
     _, pages = metrics.parse_vm_stat(VM_STAT_SAMPLE)
-    assert metrics.mem_used_bytes(16384, pages) == 20239908864
+    total = 24 * 1024**3
+    # reclaimable = free + speculative + file-backed
+    reclaimable = (11969 + 9980 + 260663) * 16384
+    assert metrics.mem_used_bytes(total, 16384, pages) == total - reclaimable
 
 
-def test_mem_used_bytes_clamps_negative_app_memory():
-    pages = {"anonymous": 5, "purgeable": 100, "wired": 10, "compressor": 20}
-    assert metrics.mem_used_bytes(4096, pages) == 30 * 4096
+def test_mem_used_bytes_clamps_when_reclaimable_exceeds_total():
+    pages = {"free": 100, "speculative": 0, "file_backed": 0}
+    # total smaller than reclaimable must clamp to 0, never negative
+    assert metrics.mem_used_bytes(50 * 4096, 4096, pages) == 0
 
 
 def test_mac_memory_returns_used_total_pct():
