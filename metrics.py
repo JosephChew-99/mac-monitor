@@ -24,8 +24,19 @@ def fmt_rate(bytes_per_sec: float) -> str:
 
 
 def fmt_gb(num_bytes: float) -> str:
-    """Bytes -> GiB with one decimal, no unit suffix (e.g. '8.1')."""
+    """Bytes -> GiB with one decimal, no unit suffix (e.g. '8.1').
+
+    Binary GiB (matches Activity Monitor, which reports memory in GiB).
+    """
     return f"{num_bytes / _GB:.1f}"
+
+
+def fmt_gb_decimal(num_bytes: float) -> str:
+    """Bytes -> decimal GB with one decimal, no unit suffix (e.g. '775.7').
+
+    Storage uses decimal GB (1 GB = 1e9 bytes) to match Finder / About This Mac.
+    """
+    return f"{num_bytes / 1_000_000_000:.1f}"
 
 
 class RateCalc:
@@ -128,6 +139,38 @@ def raw_disk_counters() -> tuple:
     if d is None:
         return 0, 0
     return d.read_bytes, d.write_bytes
+
+
+def disk_space(path: str = "/") -> dict:
+    """Storage capacity for the volume holding `path` (default boot volume).
+
+    Matches Finder / About This Mac by using NSURL's volume keys: the total
+    capacity and "available for important usage", which (unlike psutil's free)
+    counts purgeable space the OS can reclaim — that's the number Finder shows.
+    Used = total - available. Falls back to psutil if the API is unavailable.
+    """
+    try:
+        from Foundation import NSURL
+
+        url = NSURL.fileURLWithPath_(path)
+        ok_t, total, _ = url.getResourceValue_forKey_error_(
+            None, "NSURLVolumeTotalCapacityKey", None
+        )
+        ok_a, avail, _ = url.getResourceValue_forKey_error_(
+            None, "NSURLVolumeAvailableCapacityForImportantUsageKey", None
+        )
+        if ok_t and ok_a and total and avail is not None:
+            total, free = int(total), int(avail)
+            used = max(0, total - free)
+            pct = (100.0 * used / total) if total else 0.0
+            return {"total": total, "used": used, "free": free, "pct": pct}
+    except Exception:
+        pass
+
+    u = psutil.disk_usage(path)
+    used = u.total - u.free
+    pct = (100.0 * used / u.total) if u.total else 0.0
+    return {"total": u.total, "used": used, "free": u.free, "pct": pct}
 
 
 def parse_airport_tx_rate(sp_output: str):

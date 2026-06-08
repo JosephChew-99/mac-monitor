@@ -20,6 +20,11 @@ def test_fmt_gb_one_decimal():
     assert metrics.fmt_gb(int(8.1 * 1024**3)) == "8.1"
 
 
+def test_fmt_gb_decimal_uses_decimal_gb():
+    # 775.7 decimal GB (1 GB = 1e9), matches Finder
+    assert metrics.fmt_gb_decimal(775_700_000_000) == "775.7"
+
+
 def test_rate_calc_first_sample_returns_zero():
     rc = metrics.RateCalc()
     # first observation has no previous frame
@@ -57,6 +62,14 @@ def test_raw_disk_counters_returns_two_ints():
     read, write = metrics.raw_disk_counters()
     assert isinstance(read, int) and isinstance(write, int)
     assert read >= 0 and write >= 0
+
+
+def test_disk_space_used_is_total_minus_free():
+    d = metrics.disk_space()
+    assert set(d.keys()) == {"total", "used", "free", "pct"}
+    assert d["used"] == d["total"] - d["free"]
+    assert 0 <= d["used"] <= d["total"]
+    assert 0.0 <= d["pct"] <= 100.0
 
 
 def psutil_cpu_count():

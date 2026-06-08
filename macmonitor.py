@@ -29,6 +29,7 @@ class MacMonitor(rumps.App):
         self.link_item = rumps.MenuItem("连接速率  —")
         self.disk_read_item = rumps.MenuItem("磁盘 读取  —")
         self.disk_write_item = rumps.MenuItem("磁盘 写入  —")
+        self.storage_item = rumps.MenuItem("存储空间  —")
         self.speedtest_item = rumps.MenuItem("⚡ 立即测速 (fast.com 式)", callback=self.on_speed_test)
         self.speedtest_result = rumps.MenuItem("测速结果: 未测试")
         self.activity_item = rumps.MenuItem("打开活动监视器", callback=self.on_open_activity_monitor)
@@ -46,6 +47,7 @@ class MacMonitor(rumps.App):
             None,
             self.disk_read_item,
             self.disk_write_item,
+            self.storage_item,
             None,
             self.speedtest_item,
             self.speedtest_result,
@@ -89,6 +91,11 @@ class MacMonitor(rumps.App):
         self.link_item.title = f"连接速率  {self._link_label or '--'}"
         self.disk_read_item.title = f"磁盘 读取  {metrics.fmt_rate(rd)}/s"
         self.disk_write_item.title = f"磁盘 写入  {metrics.fmt_rate(wr)}/s"
+        ds = metrics.disk_space()
+        self.storage_item.title = (
+            f"存储空间  已用 {metrics.fmt_gb_decimal(ds['used'])} GB · "
+            f"可用 {metrics.fmt_gb_decimal(ds['free'])} GB"
+        )
 
     @rumps.timer(2)
     def refresh(self, _):

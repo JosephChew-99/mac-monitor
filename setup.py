@@ -9,16 +9,18 @@ OPTIONS = {
         "CFBundleName": "macmonitor",
         "CFBundleDisplayName": "macmonitor",
         # NOTE: macOS 26 (Tahoe) keeps per-bundle-ID menu-bar state in ControlCenter.
-        # The old "com.macmonitor" id got stuck in a bad state (status item created
-        # but positioned off-screen / never shown). A fresh id sidesteps that stuck
-        # state — see Stats issue #3120. Bump this id again if it ever gets stuck.
-        "CFBundleIdentifier": "com.josephchew.macmonitor",
+        # A bundle id can get stuck in a bad state (status item created but parked
+        # off-screen / never shown); clearing state / restarting ControlCenter does
+        # NOT recover it — only a fresh id does (see Stats issue #3120). This is the
+        # 2nd bump (com.macmonitor -> com.josephchew.macmonitor -> here); reinstalling
+        # the SAME id many times is what stuck it, so avoid churn. Bump again if stuck.
+        "CFBundleIdentifier": "com.josephchew.macmon",
         "LSUIElement": True,  # agent app: menu bar only, no Dock icon
     },
-    # CoreWLAN is imported lazily inside metrics.read_link_speed(), so list it
-    # explicitly — py2app's static analysis won't otherwise bundle it.
+    # CoreWLAN (read_link_speed) and Foundation (disk_space) are imported lazily,
+    # so list them explicitly — py2app's static analysis won't otherwise bundle them.
     "packages": ["rumps", "psutil"],
-    "includes": ["CoreWLAN"],
+    "includes": ["CoreWLAN", "Foundation"],
 }
 
 setup(
