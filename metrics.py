@@ -1,5 +1,6 @@
 """Pure, testable system-metric helpers for macmonitor. No rumps imports."""
 
+import os
 import re
 import subprocess
 import time
@@ -144,26 +145,25 @@ def raw_disk_counters() -> tuple:
 def disk_space(path: str = "/") -> dict:
     """Storage capacity for the volume holding `path` (default boot volume).
 
-    Matches Finder / About This Mac by using NSURL's volume keys: the total
-    capacity and "available for important usage", which (unlike psutil's free)
-    counts purgeable space the OS can reclaim — that's the number Finder shows.
-    Used = total - available. Falls back to psutil if the API is unavailable.
+    Uses the `statvfs(2)` syscall — total = blocks * frag size, free =
+    blocks-available-to-non-root, used = total - free.
+
+    MEMORY: deliberately NOT NSURL. The Finder-style number
+    (`NSURLVolumeAvailableCapacityForImportantUsageKey`, which folds in purgeable
+    space) is more accurate but its resource-value query leaks native Foundation
+    memory on every call — ~0.2-1 KB each, unbounded, which a 2 s refresh turns
+    into a steady RSS creep that neither gc nor an autorelease pool can reclaim.
+    `statvfs` holds nothing in-process: measured RSS is dead flat across tens of
+    thousands of calls. The trade-off is that we don't count purgeable space, so
+    "used" reads a little higher than Finder (~12 GB on a typical APFS volume).
     """
     try:
-        from Foundation import NSURL
-
-        url = NSURL.fileURLWithPath_(path)
-        ok_t, total, _ = url.getResourceValue_forKey_error_(
-            None, "NSURLVolumeTotalCapacityKey", None
-        )
-        ok_a, avail, _ = url.getResourceValue_forKey_error_(
-            None, "NSURLVolumeAvailableCapacityForImportantUsageKey", None
-        )
-        if ok_t and ok_a and total and avail is not None:
-            total, free = int(total), int(avail)
-            used = max(0, total - free)
-            pct = (100.0 * used / total) if total else 0.0
-            return {"total": total, "used": used, "free": free, "pct": pct}
+        s = os.statvfs(path)
+        total = s.f_blocks * s.f_frsize
+        free = s.f_bavail * s.f_frsize  # available to non-root
+        used = max(0, total - free)
+        pct = (100.0 * used / total) if total else 0.0
+        return {"total": total, "used": used, "free": free, "pct": pct}
     except Exception:
         pass
 
@@ -190,13 +190,19 @@ def read_link_speed():
     (blocking) and renamed the field. Best-effort; never raises.
     """
     try:
+        import objc
         import CoreWLAN
 
-        iface = CoreWLAN.CWWiFiClient.sharedWiFiClient().interface()
-        if iface is not None:
-            rate = iface.transmitRate()  # Mbps
-            if rate and rate > 0:
-                return f"Wi-Fi {int(rate)} Mbps"
+        # autorelease_pool: CoreWLAN's interface()/transmitRate() autorelease a few
+        # objects per call; without an explicit pool on this (timer) thread they
+        # accrete. Halves the per-call growth; combined with the 30 s throttle in
+        # the caller the residual is negligible.
+        with objc.autorelease_pool():
+            iface = CoreWLAN.CWWiFiClient.sharedWiFiClient().interface()
+            if iface is not None:
+                rate = iface.transmitRate()  # Mbps
+                if rate and rate > 0:
+                    return f"Wi-Fi {int(rate)} Mbps"
     except Exception:
         pass
     return None

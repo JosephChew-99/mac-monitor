@@ -11,10 +11,11 @@ OPTIONS = {
         # NOTE: macOS 26 (Tahoe) keeps per-bundle-ID menu-bar state in ControlCenter.
         # A bundle id can get stuck in a bad state (status item created but parked
         # off-screen / never shown); clearing state / restarting ControlCenter does
-        # NOT recover it — only a fresh id does (see Stats issue #3120). This is the
-        # 2nd bump (com.macmonitor -> com.josephchew.macmonitor -> here); reinstalling
-        # the SAME id many times is what stuck it, so avoid churn. Bump again if stuck.
-        "CFBundleIdentifier": "com.josephchew.macmon",
+        # NOT recover it — only a fresh id does (see Stats issue #3120). History:
+        # com.macmonitor -> com.josephchew.macmonitor -> com.josephchew.macmon ->
+        # here. Reinstalling the SAME id (even once, after the state is touched) can
+        # re-trigger the park, so avoid churn. Bump the trailing token if stuck again.
+        "CFBundleIdentifier": "com.josephchew.macmon2",
         "LSUIElement": True,  # agent app: menu bar only, no Dock icon
     },
     # CoreWLAN (read_link_speed) and Foundation (disk_space) are imported lazily,
