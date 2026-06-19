@@ -109,8 +109,16 @@ def test_mbps_from_bytes_and_time():
     assert metrics.mbps(12_500_000, 1.0) == 100.0
 
 
+def _stub_aux_network(monkeypatch, latency=None):
+    """Stub the best-effort latency/meta calls so tests don't hit the network."""
+    monkeypatch.setattr(metrics, "_measure_latency", lambda count, t: latency or [])
+    monkeypatch.setattr(metrics, "_probe_latency_once", lambda t: 30.0)
+    monkeypatch.setattr(metrics, "_fetch_meta", lambda t: None)
+
+
 def test_run_speed_test_uses_injected_io(monkeypatch):
     # Fake: 25 MB downloaded in 2s, 5 MB uploaded in 1s
+    _stub_aux_network(monkeypatch)
     monkeypatch.setattr(metrics, "_http_download_bytes", lambda nbytes, t: (25_000_000, 2.0))
     monkeypatch.setattr(metrics, "_http_upload_bytes", lambda nbytes, t: (5_000_000, 1.0))
     result = metrics.run_speed_test()
@@ -119,13 +127,55 @@ def test_run_speed_test_uses_injected_io(monkeypatch):
     assert result["up_mbps"] == 40.0
 
 
+def test_run_speed_test_includes_latency_jitter_and_meta(monkeypatch):
+    monkeypatch.setattr(metrics, "_measure_latency", lambda count, t: [10.0, 20.0, 30.0])
+    monkeypatch.setattr(metrics, "_probe_latency_once", lambda t: 50.0)
+    monkeypatch.setattr(
+        metrics, "_fetch_meta",
+        lambda t: {"colo": "KUL", "city": "Kuala Lumpur",
+                   "clientIp": "1.2.3.4", "asOrganization": "UNIFI-HOME", "asn": 4788},
+    )
+    monkeypatch.setattr(metrics, "_http_download_bytes", lambda nbytes, t: (25_000_000, 2.0))
+    monkeypatch.setattr(metrics, "_http_upload_bytes", lambda nbytes, t: (5_000_000, 1.0))
+    result = metrics.run_speed_test()
+    assert result["ok"] is True
+    assert result["latency_ms"] == 20.0          # median of 10/20/30
+    assert result["jitter_ms"] == 10.0           # mean abs diff of consecutive
+    assert result["server"] == "Kuala Lumpur"
+    assert result["colo"] == "KUL"
+    assert result["ip"] == "1.2.3.4"
+    assert result["isp"] == "UNIFI-HOME (AS4788)"
+    assert set(result["scores"]) == {"streaming", "gaming", "chatting"}
+
+
 def test_run_speed_test_failure_returns_not_ok(monkeypatch):
+    _stub_aux_network(monkeypatch)
+
     def boom(*a, **k):
         raise OSError("no network")
     monkeypatch.setattr(metrics, "_http_download_bytes", boom)
     result = metrics.run_speed_test()
     assert result["ok"] is False
     assert "error" in result
+
+
+def test_median_and_jitter():
+    assert metrics._median([]) is None
+    assert metrics._median([5.0]) == 5.0
+    assert metrics._median([1.0, 2.0, 3.0]) == 2.0
+    assert metrics._median([1.0, 2.0, 3.0, 4.0]) == 2.5
+    assert metrics._jitter([10.0]) is None
+    # |20-10| + |10-20| = 20, over 2 diffs -> 10
+    assert metrics._jitter([10.0, 20.0, 10.0]) == 10.0
+
+
+def test_network_quality_score_levels():
+    great = metrics.network_quality_score(20.0, 5.0, 30.0)
+    assert great["gaming"] == "很好"
+    bad = metrics.network_quality_score(400.0, 100.0, 900.0)
+    assert bad["streaming"] == "差"
+    unknown = metrics.network_quality_score(None, None, None)
+    assert unknown["gaming"] == "—"
 
 
 def test_rate_calc_clamps_negative_on_counter_reset():

@@ -1,8 +1,10 @@
 """Pure, testable system-metric helpers for macmonitor. No rumps imports."""
 
+import json
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.request
 
@@ -210,9 +212,18 @@ def read_link_speed():
 
 _DOWN_URL = "https://speed.cloudflare.com/__down?bytes={n}"
 _UP_URL = "https://speed.cloudflare.com/__up"
+# A zero-byte download is the cheapest round trip Cloudflare offers; we use it
+# to time latency (request out -> response back) the same way speed.cloudflare.com does.
+_LATENCY_URL = "https://speed.cloudflare.com/__down?bytes=0"
+# /meta returns JSON describing the edge you hit and how Cloudflare sees you
+# (colo, city, your public IP, ISP/ASN).
+_META_URL = "https://speed.cloudflare.com/meta"
 _DOWN_BYTES = 25_000_000
 _UP_BYTES = 10_000_000
 _SPEED_TIMEOUT = 30
+_LATENCY_SAMPLES = 20
+_LATENCY_TIMEOUT = 5
+_META_TIMEOUT = 5
 # Cloudflare's speed endpoints return 403 to the default urllib User-Agent,
 # so send a browser-like one.
 _UA = (
@@ -255,15 +266,182 @@ def _http_upload_bytes(nbytes: int, timeout: float):
     return nbytes, time.monotonic() - start
 
 
+def _round1(v):
+    """Round to 1 decimal, passing None through unchanged."""
+    return None if v is None else round(v, 1)
+
+
+def _median(values):
+    """Median of a list; None for an empty list."""
+    if not values:
+        return None
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    if n % 2:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2
+
+
+def _jitter(values):
+    """Mean of absolute differences between consecutive samples.
+
+    This is the same definition Cloudflare's speed test uses for jitter:
+    the average packet-to-packet variation in latency. Needs >=2 samples.
+    """
+    if len(values) < 2:
+        return None
+    diffs = [abs(values[i] - values[i - 1]) for i in range(1, len(values))]
+    return sum(diffs) / len(diffs)
+
+
+def _probe_latency_once(timeout):
+    """One round trip to the zero-byte endpoint; returns milliseconds."""
+    req = urllib.request.Request(_LATENCY_URL, headers={"User-Agent": _UA})
+    start = time.monotonic()
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        resp.read()
+    return (time.monotonic() - start) * 1000.0
+
+
+def _measure_latency(count, timeout):
+    """Probe latency `count` times; returns a list of millisecond samples.
+
+    Individual failed probes are skipped rather than aborting the whole run.
+    """
+    samples = []
+    for _ in range(count):
+        try:
+            samples.append(_probe_latency_once(timeout))
+        except Exception:
+            pass
+    return samples
+
+
+def _run_transfer_with_probes(transfer_fn, timeout):
+    """Run transfer_fn() in a thread while probing latency in parallel.
+
+    Returns (transfer_result, latency_samples). The probes taken while the
+    link is saturated are the "loaded latency" (a.k.a. latency under load).
+    Re-raises any exception from transfer_fn so the caller can mark the run failed.
+    """
+    box = {}
+
+    def runner():
+        try:
+            box["value"] = transfer_fn()
+        except Exception as e:  # noqa: BLE001 - surfaced to caller below
+            box["error"] = e
+
+    t = threading.Thread(target=runner, daemon=True)
+    probes = []
+    t.start()
+    while t.is_alive():
+        try:
+            probes.append(_probe_latency_once(timeout))
+        except Exception:
+            pass
+    t.join()
+    if "error" in box:
+        raise box["error"]
+    return box["value"], probes
+
+
+def _fetch_meta(timeout):
+    """Fetch /meta JSON (edge colo, city, your IP, ISP/ASN)."""
+    req = urllib.request.Request(_META_URL, headers={"User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _rate(value, thresholds):
+    """Map a latency-like value to a 4-level rating using ascending cutoffs.
+
+    thresholds = (great, good, average); anything worse than `average` is bad.
+    Lower is better. Returns one of 很好/好/中/差 (great/good/average/bad).
+    """
+    labels = ["很好", "好", "中", "差"]
+    if value is None:
+        return "—"
+    for i, cutoff in enumerate(thresholds):
+        if value <= cutoff:
+            return labels[i]
+    return labels[3]
+
+
+def network_quality_score(latency_ms, jitter_ms, loaded_ms):
+    """Heuristic video/gaming/chat ratings, mirroring Cloudflare's AIM idea.
+
+    Cloudflare derives these from latency, jitter and loaded latency rather
+    than measuring each use case directly; we do the same with a simple
+    responsiveness proxy = loaded latency (falling back to idle latency) plus
+    jitter. Cutoffs are tuned per use case: gaming is the strictest, streaming
+    the most tolerant. Returns a dict of streaming/gaming/chatting -> rating.
+    """
+    base = loaded_ms if loaded_ms is not None else latency_ms
+    if base is None:
+        responsiveness = None
+    else:
+        responsiveness = base + (jitter_ms or 0.0)
+    return {
+        "streaming": _rate(responsiveness, (150, 400, 800)),
+        "gaming": _rate(responsiveness, (75, 150, 300)),
+        "chatting": _rate(responsiveness, (100, 250, 500)),
+    }
+
+
 def run_speed_test() -> dict:
-    """Blocking fast.com-style test. Returns dict with ok/down_mbps/up_mbps."""
+    """Blocking Cloudflare speed test.
+
+    Returns a dict with ok plus, on success: down_mbps, up_mbps, latency_ms,
+    jitter_ms, loaded_down_ms, loaded_up_ms, scores, and (best effort) server,
+    colo, ip, isp. Latency/jitter and the /meta lookup are best-effort: if they
+    fail the throughput numbers are still returned.
+    """
     try:
-        dn_bytes, dn_t = _http_download_bytes(_DOWN_BYTES, _SPEED_TIMEOUT)
-        up_bytes, up_t = _http_upload_bytes(_UP_BYTES, _SPEED_TIMEOUT)
-        return {
+        # Best-effort edge/ISP info; never let it sink the run.
+        try:
+            meta = _fetch_meta(_META_TIMEOUT)
+        except Exception:
+            meta = None
+
+        # Idle latency + jitter, taken before we saturate the link.
+        idle = _measure_latency(_LATENCY_SAMPLES, _LATENCY_TIMEOUT)
+        latency_ms = _median(idle)
+        jitter_ms = _jitter(idle)
+
+        # Throughput, with latency probed concurrently to get loaded latency.
+        (dn_bytes, dn_t), down_probes = _run_transfer_with_probes(
+            lambda: _http_download_bytes(_DOWN_BYTES, _SPEED_TIMEOUT), _LATENCY_TIMEOUT
+        )
+        (up_bytes, up_t), up_probes = _run_transfer_with_probes(
+            lambda: _http_upload_bytes(_UP_BYTES, _SPEED_TIMEOUT), _LATENCY_TIMEOUT
+        )
+        loaded_down_ms = _median(down_probes)
+        loaded_up_ms = _median(up_probes)
+
+        result = {
             "ok": True,
             "down_mbps": mbps(dn_bytes, dn_t),
             "up_mbps": mbps(up_bytes, up_t),
+            "latency_ms": _round1(latency_ms),
+            "jitter_ms": _round1(jitter_ms),
+            "loaded_down_ms": _round1(loaded_down_ms),
+            "loaded_up_ms": _round1(loaded_up_ms),
+            "scores": network_quality_score(
+                latency_ms, jitter_ms, loaded_down_ms or loaded_up_ms
+            ),
         }
+        if meta:
+            result["colo"] = meta.get("colo")
+            result["server"] = meta.get("city") or meta.get("colo")
+            result["ip"] = meta.get("clientIp")
+            org = meta.get("asOrganization")
+            asn = meta.get("asn")
+            if org and asn:
+                result["isp"] = f"{org} (AS{asn})"
+            elif org:
+                result["isp"] = org
+        return result
     except Exception as e:
         return {"ok": False, "error": str(e)}

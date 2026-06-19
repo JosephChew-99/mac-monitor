@@ -54,7 +54,13 @@ first so the toggle points at the right place.
 - **Link speed** (title) = your Wi-Fi/Ethernet *negotiated* rate, not actual usage.
 - **网络 下载 / 上传** (dropdown) = current real throughput right now.
 - **⚡ 立即测速** = actively measures real achievable speed via Cloudflare's speed
-  endpoints (uses some data; on-demand only, never automatic).
+  endpoints (uses some data; on-demand only, never automatic). Besides download
+  and upload, it reports **延迟 (latency)** and **抖动 (jitter)**, **负载延迟
+  (loaded latency)** measured during the down/up transfers, a heuristic **网络
+  质量 (network quality)** rating for video/gaming/chat, and the **服务器 /
+  网络 / IP** info (edge colo & city, your ISP/ASN and public IP) from
+  Cloudflare's `/meta` endpoint. Packet loss is not measured — that requires
+  WebRTC/UDP, which a plain HTTP client can't do.
 
 ## Tests
 

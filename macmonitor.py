@@ -30,8 +30,20 @@ class MacMonitor(rumps.App):
         self.disk_read_item = rumps.MenuItem("磁盘 读取  —")
         self.disk_write_item = rumps.MenuItem("磁盘 写入  —")
         self.storage_item = rumps.MenuItem("存储空间  —")
-        self.speedtest_item = rumps.MenuItem("⚡ 立即测速 (fast.com 式)", callback=self.on_speed_test)
+        self.speedtest_item = rumps.MenuItem("⚡ 立即测速 (Cloudflare)", callback=self.on_speed_test)
         self.speedtest_result = rumps.MenuItem("测速结果: 未测试")
+        # Detail lines, indented; filled in after a run completes.
+        self.st_down = rumps.MenuItem("    下载  —")
+        self.st_up = rumps.MenuItem("    上传  —")
+        self.st_latency = rumps.MenuItem("    延迟  —")
+        self.st_loaded = rumps.MenuItem("    负载延迟  —")
+        self.st_score = rumps.MenuItem("    网络质量  —")
+        self.st_server = rumps.MenuItem("    服务器  —")
+        self.st_isp = rumps.MenuItem("    网络/IP  —")
+        self._st_detail_items = [
+            self.st_down, self.st_up, self.st_latency, self.st_loaded,
+            self.st_score, self.st_server, self.st_isp,
+        ]
         self.activity_item = rumps.MenuItem("打开活动监视器", callback=self.on_open_activity_monitor)
         self.autostart_item = rumps.MenuItem("开机自启", callback=self.on_toggle_autostart)
         self.autostart_item.state = 1 if autostart.is_enabled() else 0
@@ -51,6 +63,13 @@ class MacMonitor(rumps.App):
             None,
             self.speedtest_item,
             self.speedtest_result,
+            self.st_down,
+            self.st_up,
+            self.st_latency,
+            self.st_loaded,
+            self.st_score,
+            self.st_server,
+            self.st_isp,
             None,
             self.activity_item,
             self.autostart_item,
@@ -113,13 +132,18 @@ class MacMonitor(rumps.App):
         # Clicking a menu item closes the menu, so the user can't watch this line
         # update live — they'd have to reopen the menu. We post a notification when
         # the run finishes so the result reaches them without reopening.
-        self.speedtest_result.title = "测速中…（约 10 秒，完成会通知）"
+        self.speedtest_result.title = "测速中…（约 15 秒，完成会通知）"
+        for item in self._st_detail_items:
+            item.title = item.title.split("  ")[0] + "  测速中…"
 
         def worker():
             try:
                 result = metrics.run_speed_test()
                 if result["ok"]:
+                    self._apply_speedtest(result)
                     summary = f"↓{result['down_mbps']} / ↑{result['up_mbps']} Mbps"
+                    if result.get("latency_ms") is not None:
+                        summary += f" · 延迟 {result['latency_ms']}ms"
                     self.speedtest_result.title = f"结果: {summary}"
                     self._notify("测速完成", summary)
                 else:
@@ -129,6 +153,44 @@ class MacMonitor(rumps.App):
                 self._speedtest_running = False
 
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _fmt_ms(v):
+        return "—" if v is None else f"{v} ms"
+
+    def _apply_speedtest(self, r):
+        """Write a finished speed-test result dict onto the detail menu items."""
+        self.st_down.title = f"    下载  {r['down_mbps']} Mbps"
+        self.st_up.title = f"    上传  {r['up_mbps']} Mbps"
+        latency = self._fmt_ms(r.get("latency_ms"))
+        jitter = r.get("jitter_ms")
+        if jitter is not None:
+            latency += f"（抖动 {jitter} ms）"
+        self.st_latency.title = f"    延迟  {latency}"
+        self.st_loaded.title = (
+            f"    负载延迟  ↓{self._fmt_ms(r.get('loaded_down_ms'))} / "
+            f"↑{self._fmt_ms(r.get('loaded_up_ms'))}"
+        )
+        scores = r.get("scores") or {}
+        if scores:
+            self.st_score.title = (
+                f"    网络质量  视频 {scores.get('streaming', '—')} · "
+                f"游戏 {scores.get('gaming', '—')} · 通话 {scores.get('chatting', '—')}"
+            )
+        else:
+            self.st_score.title = "    网络质量  —"
+        server = r.get("server")
+        colo = r.get("colo")
+        if server and colo and colo != server:
+            self.st_server.title = f"    服务器  {server} ({colo})"
+        else:
+            self.st_server.title = f"    服务器  {server or colo or '—'}"
+        isp = r.get("isp")
+        ip = r.get("ip")
+        if isp and ip:
+            self.st_isp.title = f"    网络/IP  {isp} · {ip}"
+        else:
+            self.st_isp.title = f"    网络/IP  {isp or ip or '—'}"
 
     @staticmethod
     def _notify(title, message):
