@@ -104,6 +104,37 @@ def test_read_link_speed_does_not_crash():
     assert result is None or isinstance(result, str)
 
 
+def test_read_link_rate_does_not_crash():
+    r = metrics.read_link_rate()
+    assert r is None or isinstance(r, float)
+
+
+def test_fmt_link_rate():
+    assert metrics.fmt_link_rate(None) == "--"
+    assert metrics.fmt_link_rate(1297.0) == "Wi-Fi 1297 Mbps"
+
+
+def test_peak_hold_holds_peak_within_window():
+    p = metrics.PeakHold(window_secs=10)
+    assert p.update(100.0, now=0.0) == 100.0
+    assert p.update(80.0, now=2.0) == 100.0    # dip ignored, peak held
+    assert p.update(120.0, now=4.0) == 120.0   # new high wins
+
+
+def test_peak_hold_expires_old_samples():
+    p = metrics.PeakHold(window_secs=10)
+    p.update(100.0, now=0.0)
+    # 11s later the 100 has aged out of the window; only the new 80 remains
+    assert p.update(80.0, now=11.0) == 80.0
+
+
+def test_peak_hold_none_sample_just_prunes():
+    p = metrics.PeakHold(window_secs=10)
+    p.update(100.0, now=0.0)
+    assert p.update(None, now=5.0) == 100.0    # no reading this tick, peak held
+    assert p.update(None, now=11.0) is None    # window emptied -> no value
+
+
 def test_mbps_from_bytes_and_time():
     # 12.5 MB in 1.0s = 100 Mbps
     assert metrics.mbps(12_500_000, 1.0) == 100.0

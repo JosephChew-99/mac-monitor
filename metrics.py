@@ -70,6 +70,31 @@ class RateCalc:
         return rate
 
 
+class PeakHold:
+    """Rolling peak over a time window.
+
+    Smooths a jittery instantaneous metric (e.g. Wi-Fi transmitRate, which
+    dips when the link is idle) by reporting the highest value seen in the
+    recent window — the negotiated link rate is that high value; the low reads
+    are just idle artifacts. update() records the sample (None = "no reading
+    this tick"), prunes anything older than the window, and returns the current
+    peak (None once the window is empty).
+    """
+
+    def __init__(self, window_secs: float):
+        self._window = window_secs
+        self._samples = []  # list of (timestamp, value); value is never None
+
+    def update(self, value, now: float):
+        if value is not None:
+            self._samples.append((now, value))
+        cutoff = now - self._window
+        self._samples = [(t, v) for (t, v) in self._samples if t >= cutoff]
+        if not self._samples:
+            return None
+        return max(v for (_, v) in self._samples)
+
+
 def parse_vm_stat(output: str):
     """Parse `vm_stat` output -> (page_size_bytes, {page-category: count})."""
     psm = re.search(r"page size of (\d+)", output)
@@ -184,12 +209,15 @@ def parse_airport_tx_rate(sp_output: str):
     return int(m.group(1)) if m else None
 
 
-def read_link_speed():
-    """Return a short label like 'Wi-Fi 1152M', or None if unavailable.
+def read_link_rate():
+    """Wi-Fi link transmit rate in Mbps (float), or None if unavailable.
 
     Uses CoreWLAN's transmitRate() — instant and permission-free (no SSID needed).
     `system_profiler SPAirPortDataType` was dropped: on macOS 26 it can take >10s
     (blocking) and renamed the field. Best-effort; never raises.
+
+    NOTE: this is the *instantaneous* negotiated PHY rate, so it jitters and dips
+    when the link is idle. Callers smooth it with PeakHold rather than show it raw.
     """
     try:
         import objc
@@ -197,17 +225,33 @@ def read_link_speed():
 
         # autorelease_pool: CoreWLAN's interface()/transmitRate() autorelease a few
         # objects per call; without an explicit pool on this (timer) thread they
-        # accrete. Halves the per-call growth; combined with the 30 s throttle in
-        # the caller the residual is negligible.
+        # accrete. The pool drains them each call so frequent sampling stays safe.
         with objc.autorelease_pool():
             iface = CoreWLAN.CWWiFiClient.sharedWiFiClient().interface()
             if iface is not None:
                 rate = iface.transmitRate()  # Mbps
                 if rate and rate > 0:
-                    return f"Wi-Fi {int(rate)} Mbps"
+                    return float(rate)
     except Exception:
         pass
     return None
+
+
+def fmt_link_rate(mbps):
+    """Numeric Mbps -> 'Wi-Fi 1297 Mbps'; None -> '--'."""
+    if mbps is None:
+        return "--"
+    return f"Wi-Fi {int(mbps)} Mbps"
+
+
+def read_link_speed():
+    """Short label like 'Wi-Fi 1297 Mbps', or None if unavailable.
+
+    Thin wrapper over read_link_rate(); kept for callers/tests wanting the raw
+    (unsmoothed) label.
+    """
+    rate = read_link_rate()
+    return fmt_link_rate(rate) if rate is not None else None
 
 
 _DOWN_URL = "https://speed.cloudflare.com/__down?bytes={n}"

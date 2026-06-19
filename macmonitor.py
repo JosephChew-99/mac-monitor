@@ -11,7 +11,10 @@ import metrics
 import autostart
 
 APP_PATH = "/Applications/macmonitor.app"  # used by the auto-start LaunchAgent
-LINK_SPEED_REFRESH_SECS = 30
+# Wi-Fi link rate: sample transmitRate() this often, then peak-hold over a window
+# so the jittery instantaneous reading doesn't bounce around in the menu.
+LINK_SAMPLE_SECS = 5
+LINK_PEAK_WINDOW_SECS = 150
 
 
 class MacMonitor(rumps.App):
@@ -78,8 +81,8 @@ class MacMonitor(rumps.App):
 
         self._net_rate = metrics.RateCalc()
         self._disk_rate = metrics.RateCalc()
-        self._link_label = None
-        self._last_link_read = 0.0
+        self._link_peak = metrics.PeakHold(LINK_PEAK_WINDOW_SECS)
+        self._last_link_sample = 0.0
         self._speedtest_running = False
 
     def _render(self):
@@ -92,10 +95,13 @@ class MacMonitor(rumps.App):
         read, write = metrics.raw_disk_counters()
         rd, wr = self._disk_rate.update(read, write, now)
 
-        # link speed (CoreWLAN — instant, no subprocess) refreshed at most every 30s
-        if now - self._last_link_read > LINK_SPEED_REFRESH_SECS or self._link_label is None:
-            self._link_label = metrics.read_link_speed()
-            self._last_link_read = now
+        # Wi-Fi link rate: sample every few seconds, then peak-hold over a window so
+        # the jittery instantaneous transmitRate() doesn't make the reading bounce.
+        sample = None
+        if now - self._last_link_sample >= LINK_SAMPLE_SECS:
+            sample = metrics.read_link_rate()
+            self._last_link_sample = now
+        link_peak = self._link_peak.update(sample, now)
         # menu bar title: spaced out for readability, e.g. "23% · 8.4G".
         self.title = f"{s['cpu_pct']:.0f}% · {metrics.fmt_gb(s['ram_used'])}G"
 
@@ -107,7 +113,7 @@ class MacMonitor(rumps.App):
         )
         self.net_down_item.title = f"网络 下载  {metrics.fmt_rate(dn)}/s"
         self.net_up_item.title = f"网络 上传  {metrics.fmt_rate(up)}/s"
-        self.link_item.title = f"连接速率  {self._link_label or '--'}"
+        self.link_item.title = f"连接速率  {metrics.fmt_link_rate(link_peak)}"
         self.disk_read_item.title = f"磁盘 读取  {metrics.fmt_rate(rd)}/s"
         self.disk_write_item.title = f"磁盘 写入  {metrics.fmt_rate(wr)}/s"
         ds = metrics.disk_space()
